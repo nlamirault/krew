@@ -1,5 +1,18 @@
 # all available settings of specific linters
 linters-settings:
+  gocritic:
+    enabled-tags:
+      - performance
+      - diagnostic
+      - style
+      - experimental
+      - opinionated
+    disabled-checks:
+      - hugeParam
+      - rangeValCopy
+      - unnamedResult
+  gofmt:
+    simplify: true
   goimports:
     # put imports beginning with prefix after 3rd-party packages;
     # it's a comma-separated list of prefixes
@@ -23,20 +36,25 @@ run:
   tests: true
 
 linters:
+  disable-all: true
   enable:
+    - deadcode
+    - errcheck
+    - gci
     - gocritic
+    - gofmt
     - goimports
     - golint
     - gosimple
+    - govet
+    - ineffassign
     - interfacer
     - maligned
     - misspell
-    - unconvert
-    - unparam
-    - stylecheck
+    - prealloc
     - staticcheck
     - structcheck
-    - prealloc
-    - deadcode
+    - stylecheck
+    - unconvert
+    - unparam
     - varcheck
-    - errcheck

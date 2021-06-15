@@ -23,8 +23,12 @@ import (
 	"k8s.io/klog"
 
 	"sigs.k8s.io/krew/cmd/krew/cmd/internal"
-	"sigs.k8s.io/krew/pkg/index/indexscanner"
-	"sigs.k8s.io/krew/pkg/installation"
+	"sigs.k8s.io/krew/internal/index/indexscanner"
+	"sigs.k8s.io/krew/internal/index/validation"
+	"sigs.k8s.io/krew/internal/installation"
+	"sigs.k8s.io/krew/internal/installation/receipt"
+	"sigs.k8s.io/krew/internal/pathutil"
+	"sigs.k8s.io/krew/pkg/constants"
 )
 
 func init() {
@@ -41,38 +45,77 @@ To only upgrade single plugins provide them as arguments:
 kubectl krew upgrade foo bar"`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var ignoreUpgraded bool
+			var skipErrors bool
+
 			var pluginNames []string
-			// Upgrade all plugins.
 			if len(args) == 0 {
-				installed, err := installation.ListInstalledPlugins(paths.InstallReceiptsPath())
+				// Upgrade all plugins.
+				installed, err := installation.GetInstalledPluginReceipts(paths.InstallReceiptsPath())
 				if err != nil {
 					return errors.Wrap(err, "failed to find all installed versions")
 				}
-				for name := range installed {
-					pluginNames = append(pluginNames, name)
+				for _, receipt := range installed {
+					pluginNames = append(pluginNames, receipt.Status.Source.Name+"/"+receipt.Name)
 				}
 				ignoreUpgraded = true
+				skipErrors = true
 			} else {
-				pluginNames = args
+				// Upgrade certain plugins
+				for _, arg := range args {
+					if isCanonicalName(arg) {
+						return errors.New("upgrade command does not support INDEX/PLUGIN syntax; just specify PLUGIN")
+					} else if !validation.IsSafePluginName(arg) {
+						return unsafePluginNameErr(arg)
+					}
+					r, err := receipt.Load(paths.PluginInstallReceiptPath(arg))
+					if err != nil {
+						return errors.Wrapf(err, "read receipt %q", arg)
+					}
+					pluginNames = append(pluginNames, r.Status.Source.Name+"/"+r.Name)
+				}
 			}
 
+			var nErrors int
 			for _, name := range pluginNames {
-				plugin, err := indexscanner.LoadPluginFileFromFS(paths.IndexPluginsPath(), name)
-				if err != nil {
-					return errors.Wrapf(err, "failed to load the plugin manifest for plugin %s", name)
-				}
-
-				klog.V(2).Infof("Upgrading plugin: %s\n", plugin.Name)
-				err = installation.Upgrade(paths, plugin)
-				if ignoreUpgraded && err == installation.ErrIsAlreadyUpgraded {
-					fmt.Fprintf(os.Stderr, "Skipping plugin %s, it is already on the newest version\n", plugin.Name)
+				indexName, pluginName := pathutil.CanonicalPluginName(name)
+				if indexName == "detached" {
+					klog.Warningf("Skipping upgrade for %q because it was installed via manifest\n", pluginName)
 					continue
 				}
+
+				plugin, err := indexscanner.LoadPluginByName(paths.IndexPluginsPath(indexName), pluginName)
 				if err != nil {
-					return errors.Wrapf(err, "failed to upgrade plugin %q", plugin.Name)
+					if !os.IsNotExist(err) {
+						return errors.Wrapf(err, "failed to load the plugin manifest for plugin %s", name)
+					} else if !skipErrors {
+						return errors.Errorf("plugin %q does not exist in the plugin index", name)
+					}
 				}
-				fmt.Fprintf(os.Stderr, "Upgraded plugin: %s\n", plugin.Name)
-				internal.PrintSecurityNotice()
+
+				pluginDisplayName := displayName(plugin, indexName)
+				if err == nil {
+					fmt.Fprintf(os.Stderr, "Upgrading plugin: %s\n", pluginDisplayName)
+					err = installation.Upgrade(paths, plugin, indexName)
+					if ignoreUpgraded && err == installation.ErrIsAlreadyUpgraded {
+						fmt.Fprintf(os.Stderr, "Skipping plugin %s, it is already on the newest version\n", pluginDisplayName)
+						continue
+					}
+				}
+				if err != nil {
+					nErrors++
+					if skipErrors {
+						fmt.Fprintf(os.Stderr, "WARNING: failed to upgrade plugin %q, skipping (error: %v)\n", pluginDisplayName, err)
+						continue
+					}
+					return errors.Wrapf(err, "failed to upgrade plugin %q", pluginDisplayName)
+				}
+				fmt.Fprintf(os.Stderr, "Upgraded plugin: %s\n", pluginDisplayName)
+				if indexName == constants.DefaultIndexName {
+					internal.PrintSecurityNotice(plugin.Name)
+				}
+			}
+			if nErrors > 0 {
+				fmt.Fprintf(os.Stderr, "WARNING: Some plugins failed to upgrade, check logs above.\n")
 			}
 			return nil
 		},
@@ -81,7 +124,7 @@ kubectl krew upgrade foo bar"`,
 				klog.V(4).Infof("--no-update-index specified, skipping updating local copy of plugin index")
 				return nil
 			}
-			return ensureIndexUpdated(cmd, args)
+			return ensureIndexes(cmd, args)
 		},
 	}
 

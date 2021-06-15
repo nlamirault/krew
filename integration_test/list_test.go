@@ -15,18 +15,27 @@
 package integrationtest
 
 import (
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+
+	"sigs.k8s.io/krew/internal/environment"
+	"sigs.k8s.io/krew/internal/index/indexscanner"
+	"sigs.k8s.io/krew/internal/installation/receipt"
+	"sigs.k8s.io/krew/internal/testutil"
+	"sigs.k8s.io/krew/pkg/constants"
+	"sigs.k8s.io/krew/pkg/index"
 )
 
 func TestKrewList(t *testing.T) {
 	skipShort(t)
 
-	test, cleanup := NewTest(t)
-	defer cleanup()
+	test := NewTest(t)
 
-	initialList := test.WithIndex().Krew("list").RunOrFailOutput()
+	test = test.WithDefaultIndex().WithCustomIndexFromDefault("foo")
+	initialList := test.Krew("list").RunOrFailOutput()
 	initialOut := []byte{'\n'}
 
 	if diff := cmp.Diff(initialList, initialOut); diff != "" {
@@ -40,5 +49,38 @@ func TestKrewList(t *testing.T) {
 	if diff := cmp.Diff(eventualList, expected); diff != "" {
 		t.Fatalf("'list' output doesn't match:\n%s", diff)
 	}
-	// TODO(ahmetb): install multiple plugins and see if the output is sorted
+
+	test.Krew("install", "foo/"+validPlugin2).RunOrFail()
+
+	want := []string{validPlugin, "foo/" + validPlugin2}
+	actual := lines(test.Krew("list").RunOrFailOutput())
+	if diff := cmp.Diff(actual, want); diff != "" {
+		t.Fatalf("'list' output doesn't match:\n%s", diff)
+	}
+}
+
+func TestKrewListSorted(t *testing.T) {
+	skipShort(t)
+	test := NewTest(t)
+
+	test = test.WithDefaultIndex()
+
+	paths := environment.NewPaths(test.Root())
+	ps, err := indexscanner.LoadPluginListFromFS(paths.IndexPluginsPath(constants.DefaultIndexName))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	indexes := []string{"", "default", "bar"}
+	for i, p := range ps {
+		src := indexes[i%len(indexes)]
+		r := testutil.NewReceipt().WithPlugin(p).WithStatus(index.ReceiptStatus{Source: index.SourceIndex{Name: src}}).V()
+		if err := receipt.Store(r, paths.PluginInstallReceiptPath(p.Name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out := lines(test.Krew("list").RunOrFailOutput())
+	if !sort.StringsAreSorted(out) {
+		t.Fatalf("list output is not sorted: [%s]", strings.Join(out, ", "))
+	}
 }

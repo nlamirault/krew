@@ -1,24 +1,10 @@
-# Copyright 2019 The Kubernetes Authors.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 apiVersion: krew.googlecontainertools.github.com/v1alpha2
 kind: Plugin
 metadata:
   name: krew
 spec:
   version: "KREW_TAG"
-  homepage: https://sigs.k8s.io/krew
+  homepage: https://krew.sigs.k8s.io/
   shortDescription: Package manager for kubectl plugins.
   caveats: |
     krew is now installed! To start using kubectl plugins, you need to add
@@ -36,11 +22,12 @@ spec:
     For a full list of available plugins, run:
       $ kubectl krew search
 
-    You can find documentation at https://sigs.k8s.io/krew.
+    You can find documentation at
+      https://krew.sigs.k8s.io/docs/user-guide/quickstart/.
 
   platforms:
-  - uri: https://github.com/kubernetes-sigs/krew/releases/download/KREW_TAG/krew.tar.gz
-    sha256: KREW_TAR_CHECKSUM
+  - uri: https://github.com/kubernetes-sigs/krew/releases/download/KREW_TAG/krew-darwin_amd64.tar.gz
+    sha256: KREW_DARWIN_AMD64_CHECKSUM
     bin: krew
     files:
     - from: ./krew-darwin_amd64
@@ -51,8 +38,20 @@ spec:
       matchLabels:
         os: darwin
         arch: amd64
-  - uri: https://github.com/kubernetes-sigs/krew/releases/download/KREW_TAG/krew.tar.gz
-    sha256: KREW_TAR_CHECKSUM
+  - uri: https://github.com/kubernetes-sigs/krew/releases/download/KREW_TAG/krew-darwin_arm64.tar.gz
+    sha256: KREW_DARWIN_ARM64_CHECKSUM
+    bin: krew
+    files:
+    - from: ./krew-darwin_arm64
+      to: krew
+    - from: ./LICENSE
+      to: .
+    selector:
+      matchLabels:
+        os: darwin
+        arch: arm64
+  - uri: https://github.com/kubernetes-sigs/krew/releases/download/KREW_TAG/krew-linux_amd64.tar.gz
+    sha256: KREW_LINUX_AMD64_CHECKSUM
     bin: krew
     files:
     - from: ./krew-linux_amd64
@@ -63,8 +62,8 @@ spec:
       matchLabels:
         os: linux
         arch: amd64
-  - uri: https://github.com/kubernetes-sigs/krew/releases/download/KREW_TAG/krew.tar.gz
-    sha256: KREW_TAR_CHECKSUM
+  - uri: https://github.com/kubernetes-sigs/krew/releases/download/KREW_TAG/krew-linux_arm.tar.gz
+    sha256: KREW_LINUX_ARM_CHECKSUM
     bin: krew
     files:
     - from: ./krew-linux_arm
@@ -75,8 +74,20 @@ spec:
       matchLabels:
         os: linux
         arch: arm
-  - uri: https://github.com/kubernetes-sigs/krew/releases/download/KREW_TAG/krew.tar.gz
-    sha256: KREW_TAR_CHECKSUM
+  - uri: https://github.com/kubernetes-sigs/krew/releases/download/KREW_TAG/krew-linux_arm64.tar.gz
+    sha256: KREW_LINUX_ARM64_CHECKSUM
+    bin: krew
+    files:
+    - from: ./krew-linux_arm64
+      to: krew
+    - from: ./LICENSE
+      to: .
+    selector:
+      matchLabels:
+        os: linux
+        arch: arm64
+  - uri: https://github.com/kubernetes-sigs/krew/releases/download/KREW_TAG/krew-windows_amd64.tar.gz
+    sha256: KREW_WINDOWS_AMD64_CHECKSUM
     bin: krew.exe
     files:
     - from: ./krew-windows_amd64.exe

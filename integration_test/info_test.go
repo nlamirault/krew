@@ -14,26 +14,46 @@
 
 package integrationtest
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestKrewInfo(t *testing.T) {
 	skipShort(t)
 
-	test, cleanup := NewTest(t)
-	defer cleanup()
+	test := NewTest(t)
 
-	test.WithIndex().Krew("info", validPlugin).RunOrFail()
+	out := string(test.WithDefaultIndex().Krew("info", validPlugin).RunOrFailOutput())
+	expected := `INDEX: default`
+	if !strings.Contains(out, expected) {
+		t.Fatalf("info output doesn't have %q. output=%q", expected, out)
+	}
 }
 
 func TestKrewInfoInvalidPlugin(t *testing.T) {
 	skipShort(t)
 
-	test, cleanup := NewTest(t)
-	defer cleanup()
+	test := NewTest(t)
 
 	plugin := "invalid-plugin"
-	err := test.WithIndex().Krew("info", plugin).Run()
+	_, err := test.WithDefaultIndex().Krew("info", plugin).Run()
 	if err == nil {
 		t.Errorf("Expected `krew info %s` to fail", plugin)
+	}
+}
+
+func TestKrewInfoCustomIndex(t *testing.T) {
+	skipShort(t)
+
+	test := NewTest(t)
+
+	test = test.WithDefaultIndex().WithCustomIndexFromDefault("foo")
+	test.Krew("install", "foo/"+validPlugin).RunOrFail()
+
+	out := string(test.Krew("info", "foo/"+validPlugin).RunOrFailOutput())
+	expected := `INDEX: foo`
+	if !strings.Contains(out, expected) {
+		t.Fatalf("info output doesn't have %q. output=%q", expected, out)
 	}
 }

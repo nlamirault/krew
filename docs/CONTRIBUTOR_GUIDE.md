@@ -1,8 +1,8 @@
 # Contributor Guide
 
-This guide is intended for people who want to start working on `krew` itself.
-If you intend to write a new plugin, see [Developer Guide](./DEVELOPER_GUIDE.md)
-instead.
+This guide is intended for people who want to start working on `krew` itself. If
+you intend to write a new plugin, see the [Developer
+Guide](https://krew.sigs.k8s.io/docs/developer-guide/) instead.
 
 ## Setting up the environment
 
@@ -15,6 +15,21 @@ mkdir -p $(go env GOPATH)/src/sigs.k8s.io/krew
 cd $(go env GOPATH)/src/sigs.k8s.io/krew
 git clone https://github.com/kubernetes-sigs/krew .
 git remote set-url origin --push no_push   # to avoid pushes
+```
+
+### Using macOS for development
+
+The tools provided in the `hack` folder expect you to use GNU binaries, the easiest way to install them is to use brew
+
+```bash
+brew install coreutils grep gnu-sed
+```
+And remember to add them to your `$PATH` to make them your default binaries
+
+```bash
+export PATH=$(brew --prefix coreutils)/libexec/gnubin:$PATH
+export PATH="$(brew --prefix grep)/libexec/gnubin:$PATH"
+export PATH="$(brew --prefix gnu-sed)/libexec/gnubin:$PATH"
 ```
 
 ## Code style
@@ -37,7 +52,7 @@ goimports -local sigs.k8s.io/krew -w cmd pkg integration_test
 Shell scripts are automatically formatted by `shfmt`, to install and to validate run:
 
 ```bash
-hach/run-lint.sh
+hack/run-lint.sh
 ```
 
 If format is in expected format, there will be no output.

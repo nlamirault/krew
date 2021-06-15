@@ -22,10 +22,11 @@ import (
 	"github.com/pkg/errors"
 	"github.com/sahilm/fuzzy"
 	"github.com/spf13/cobra"
+	"k8s.io/klog"
 
-	"sigs.k8s.io/krew/pkg/index"
-	"sigs.k8s.io/krew/pkg/index/indexscanner"
-	"sigs.k8s.io/krew/pkg/installation"
+	"sigs.k8s.io/krew/internal/index/indexoperations"
+	"sigs.k8s.io/krew/internal/index/indexscanner"
+	"sigs.k8s.io/krew/internal/installation"
 )
 
 // searchCmd represents the search command
@@ -42,52 +43,73 @@ Examples:
   To fuzzy search plugins with a keyword:
     kubectl krew search KEYWORD`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		plugins, err := indexscanner.LoadPluginListFromFS(paths.IndexPluginsPath())
+		indexes, err := indexoperations.ListIndexes(paths)
 		if err != nil {
-			return errors.Wrap(err, "failed to load the list of plugins from the index")
-		}
-		names := make([]string, len(plugins))
-		pluginMap := make(map[string]index.Plugin, len(plugins))
-		for i, p := range plugins {
-			names[i] = p.Name
-			pluginMap[p.Name] = p
+			return errors.Wrap(err, "failed to list indexes")
 		}
 
-		installed, err := installation.ListInstalledPlugins(paths.InstallReceiptsPath())
+		klog.V(3).Infof("found %d indexes", len(indexes))
+
+		var plugins []pluginEntry
+		for _, idx := range indexes {
+			ps, err := indexscanner.LoadPluginListFromFS(paths.IndexPluginsPath(idx.Name))
+			if err != nil {
+				return errors.Wrapf(err, "failed to load the list of plugins from the index %q", idx.Name)
+			}
+			for _, p := range ps {
+				plugins = append(plugins, pluginEntry{p, idx.Name})
+			}
+		}
+
+		pluginCanonicalNames := make([]string, len(plugins))
+		pluginCanonicalNameMap := make(map[string]pluginEntry, len(plugins))
+		for i, p := range plugins {
+			cn := canonicalName(p.p, p.indexName)
+			pluginCanonicalNames[i] = cn
+			pluginCanonicalNameMap[cn] = p
+		}
+
+		installed := make(map[string]bool)
+		receipts, err := installation.GetInstalledPluginReceipts(paths.InstallReceiptsPath())
 		if err != nil {
 			return errors.Wrap(err, "failed to load installed plugins")
 		}
+		for _, receipt := range receipts {
+			cn := canonicalName(receipt.Plugin, indexOf(receipt))
+			installed[cn] = true
+		}
 
-		var matchNames []string
+		var searchResults []string
 		if len(args) > 0 {
-			matches := fuzzy.Find(strings.Join(args, ""), names)
+			matches := fuzzy.Find(strings.Join(args, ""), pluginCanonicalNames)
 			for _, m := range matches {
-				matchNames = append(matchNames, m.Str)
+				searchResults = append(searchResults, m.Str)
 			}
 		} else {
-			matchNames = names
+			searchResults = pluginCanonicalNames
 		}
 
 		// No plugins found
-		if len(matchNames) == 0 {
+		if len(searchResults) == 0 {
 			return nil
 		}
 
 		var rows [][]string
 		cols := []string{"NAME", "DESCRIPTION", "INSTALLED"}
-		for _, name := range matchNames {
-			plugin := pluginMap[name]
+		for _, canonicalName := range searchResults {
+			v := pluginCanonicalNameMap[canonicalName]
 			var status string
-			if _, ok := installed[name]; ok {
+			if installed[canonicalName] {
 				status = "yes"
-			} else if _, ok, err := installation.GetMatchingPlatform(plugin.Spec.Platforms); err != nil {
-				return errors.Wrapf(err, "failed to get the matching platform for plugin %s", name)
+			} else if _, ok, err := installation.GetMatchingPlatform(v.p.Spec.Platforms); err != nil {
+				return errors.Wrapf(err, "failed to get the matching platform for plugin %s", canonicalName)
 			} else if ok {
 				status = "no"
 			} else {
 				status = "unavailable on " + runtime.GOOS
 			}
-			rows = append(rows, []string{name, limitString(plugin.Spec.ShortDescription, 50), status})
+
+			rows = append(rows, []string{displayName(v.p, v.indexName), limitString(v.p.Spec.ShortDescription, 50), status})
 		}
 		rows = sortByFirstColumn(rows)
 		return printTable(os.Stdout, cols, rows)

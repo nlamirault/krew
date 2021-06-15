@@ -30,10 +30,12 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/klog"
 
+	"sigs.k8s.io/krew/internal/environment"
+	"sigs.k8s.io/krew/internal/index/indexscanner"
+	"sigs.k8s.io/krew/internal/index/validation"
+	"sigs.k8s.io/krew/internal/installation"
 	"sigs.k8s.io/krew/pkg/constants"
 	"sigs.k8s.io/krew/pkg/index"
-	"sigs.k8s.io/krew/pkg/index/indexscanner"
-	"sigs.k8s.io/krew/pkg/index/validation"
 )
 
 var flManifest string
@@ -62,15 +64,15 @@ func main() {
 }
 
 func validateManifestFile(path string) error {
-	klog.V(4).Infof("reading file %s", path)
-	p, err := indexscanner.ReadPluginFile(path)
+	klog.Infof("reading file %q", path)
+	p, err := indexscanner.ReadPluginFromFile(path)
 	if err != nil {
 		return errors.Wrap(err, "failed to read plugin file")
 	}
 	filename := filepath.Base(path)
 	manifestExtension := filepath.Ext(filename)
 	if manifestExtension != constants.ManifestExtension {
-		return fmt.Errorf("expected manifest extension %q but found %q", constants.ManifestExtension, manifestExtension)
+		return errors.Errorf("expected manifest extension %q but found %q", constants.ManifestExtension, manifestExtension)
 	}
 	pluginNameFromFileName := strings.TrimSuffix(filename, manifestExtension)
 	klog.V(4).Infof("inferred plugin name as %s", pluginNameFromFileName)
@@ -83,7 +85,7 @@ func validateManifestFile(path string) error {
 
 	// make sure each platform matches a supported platform
 	for i, p := range p.Spec.Platforms {
-		if os, arch := findAnyMatchingPlatform(p.Selector); os == "" || arch == "" {
+		if env := findAnyMatchingPlatform(p.Selector); env.OS == "" || env.Arch == "" {
 			return errors.Errorf("spec.platform[%d]'s selector (%v) doesn't match any supported platforms", i, p.Selector)
 		}
 	}
@@ -110,18 +112,16 @@ func validateManifestFile(path string) error {
 // isOverlappingPlatformSelectors validates if multiple platforms have selectors
 // that match to a supported <os,arch> pair.
 func isOverlappingPlatformSelectors(platforms []index.Platform) error {
-	for _, v := range allPlatforms() {
-		os, arch := v[0], v[1]
-
+	for _, env := range allPlatforms() {
 		var matchIndex []int
 		for i, p := range platforms {
-			if selectorMatchesOSArch(p.Selector, os, arch) {
+			if selectorMatchesOSArch(p.Selector, env) {
 				matchIndex = append(matchIndex, i)
 			}
 		}
 
 		if len(matchIndex) > 1 {
-			return errors.Errorf("multiple spec.platforms (at indexes %v) have overlapping selectors that select os=%s/arch=%s", matchIndex, os, arch)
+			return errors.Errorf("multiple spec.platforms (at indexes %v) have overlapping selectors that select %s", matchIndex, env)
 		}
 	}
 	return nil
@@ -130,8 +130,8 @@ func isOverlappingPlatformSelectors(platforms []index.Platform) error {
 // installPlatformSpec installs the p to a temporary location on disk to verify
 // by shelling out to external command.
 func installPlatformSpec(manifestFile string, p index.Platform) error {
-	goos, goarch := findAnyMatchingPlatform(p.Selector)
-	if goos == "" || goarch == "" {
+	env := findAnyMatchingPlatform(p.Selector)
+	if env.OS == "" || env.Arch == "" {
 		return errors.Errorf("no supported platform matched platform selector: %+v", p.Selector)
 	}
 
@@ -149,33 +149,72 @@ func installPlatformSpec(manifestFile string, p index.Platform) error {
 	cmd.Stdin = nil
 	cmd.Env = []string{
 		"KREW_ROOT=" + tmpDir,
-		"KREW_OS=" + goos,
-		"KREW_ARCH=" + goarch,
+		"KREW_OS=" + env.OS,
+		"KREW_ARCH=" + env.Arch,
 	}
 	klog.V(2).Infof("installing plugin with: %+v", cmd.Env)
 	cmd.Env = append(cmd.Env, "PATH="+os.Getenv("PATH"))
 
 	b, err := cmd.CombinedOutput()
 	if err != nil {
-		output := strings.Replace(string(b), "\n", "\n\t", -1)
+		output := strings.ReplaceAll(string(b), "\n", "\n\t")
 		return errors.Wrapf(err, "plugin install command failed: %s", output)
 	}
-	return nil
+
+	err = validateLicenseFileExists(tmpDir)
+	return errors.Wrap(err, "LICENSE (or alike) file is not extracted from the archive as part of installation")
+}
+
+var licenseFiles = map[string]struct{}{
+	"license":      {},
+	"license.txt":  {},
+	"license.md":   {},
+	"licenses":     {},
+	"licenses.txt": {},
+	"licenses.md":  {},
+	"copying":      {},
+	"copying.txt":  {},
+}
+
+func validateLicenseFileExists(krewRoot string) error {
+	dir := environment.NewPaths(krewRoot).InstallPath()
+	var files []string
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.Mode().IsRegular() {
+			files = append(files, info.Name())
+		}
+		return nil
+	})
+	if err != nil {
+		return errors.Wrap(err, "failed to walk installation directory")
+	}
+
+	for _, f := range files {
+		klog.V(8).Infof("found installed file: %s", f)
+		if _, ok := licenseFiles[strings.ToLower(filepath.Base(f))]; ok {
+			klog.V(8).Infof("found license file %q", f)
+			return nil
+		}
+	}
+	return errors.Errorf("could not find license file among [%s]", strings.Join(files, ", "))
 }
 
 // findAnyMatchingPlatform finds an <os,arch> pair matches to given selector
-func findAnyMatchingPlatform(selector *metav1.LabelSelector) (string, string) {
+func findAnyMatchingPlatform(selector *metav1.LabelSelector) installation.OSArchPair {
 	for _, p := range allPlatforms() {
-		if selectorMatchesOSArch(selector, p[0], p[1]) {
-			klog.V(4).Infof("%s MATCHED <%s,%s>", selector, p[0], p[1])
-			return p[0], p[1]
+		if selectorMatchesOSArch(selector, p) {
+			klog.V(4).Infof("%s MATCHED <%s>", selector, p)
+			return p
 		}
-		klog.V(4).Infof("%s didn't match <%s,%s>", selector, p[0], p[1])
+		klog.V(4).Infof("%s didn't match <%s>", selector, p)
 	}
-	return "", ""
+	return installation.OSArchPair{}
 }
 
-func selectorMatchesOSArch(selector *metav1.LabelSelector, os, arch string) bool {
+func selectorMatchesOSArch(selector *metav1.LabelSelector, env installation.OSArchPair) bool {
 	sel, err := metav1.LabelSelectorAsSelector(selector)
 	if err != nil {
 		// this should've been caught by validation.ValidatePlatform() earlier
@@ -183,21 +222,23 @@ func selectorMatchesOSArch(selector *metav1.LabelSelector, os, arch string) bool
 		return false
 	}
 	return sel.Matches(labels.Set{
-		"os":   os,
-		"arch": arch,
+		"os":   env.OS,
+		"arch": env.Arch,
 	})
 }
 
 // allPlatforms returns all <os,arch> pairs krew is supported on.
-func allPlatforms() [][2]string {
+func allPlatforms() []installation.OSArchPair {
 	// TODO(ahmetb) find a more authoritative source for this list
-	return [][2]string{
-		{"windows", "386"},
-		{"windows", "amd64"},
-		{"linux", "386"},
-		{"linux", "amd64"},
-		{"linux", "arm"},
-		{"darwin", "386"},
-		{"darwin", "amd64"},
+	return []installation.OSArchPair{
+		{OS: "windows", Arch: "386"},
+		{OS: "windows", Arch: "amd64"},
+		{OS: "linux", Arch: "386"},
+		{OS: "linux", Arch: "amd64"},
+		{OS: "linux", Arch: "arm"},
+		{OS: "linux", Arch: "arm64"},
+		{OS: "darwin", Arch: "386"},
+		{OS: "darwin", Arch: "amd64"},
+		{OS: "darwin", Arch: "arm64"},
 	}
 }

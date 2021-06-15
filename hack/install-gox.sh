@@ -17,26 +17,12 @@
 set -euo pipefail
 [[ -n "${DEBUG:-}" ]] && set -x
 
-scratch_dir="$(mktemp -d)"
-cleanup() {
-  rm -rf "${scratch_dir}"
-}
-trap cleanup EXIT
-
-install_gox() {
-  gobin="$(go env GOPATH)/bin"
-  cd "${scratch_dir}"
-  env GOPATH="${scratch_dir}" \
-    GO111MODULE=off \
-    GOBIN="${gobin}" \
-    go get github.com/mitchellh/gox
-}
-
 ensure_gox() {
   command -v "gox" &>/dev/null
 }
 
-install_gox
+go install github.com/mitchellh/gox@v1.0.1
+
 if ! ensure_gox; then
   echo >&2 "gox not in PATH"
   exit 1

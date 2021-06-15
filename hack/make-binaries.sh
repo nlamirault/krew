@@ -25,8 +25,9 @@ if ! command -v "gox" &>/dev/null; then
   exit 1
 fi
 
-supported_platforms="darwin/amd64 windows/amd64 linux/amd64 linux/arm"
-version_pkg="sigs.k8s.io/krew/pkg/version"
+supported_platforms="darwin/amd64 darwin/arm64 windows/amd64\
+ linux/amd64 linux/arm linux/arm64"
+version_pkg="sigs.k8s.io/krew/internal/version"
 
 cd "${SCRIPTDIR}/.."
 rm -rf -- "out/"
@@ -37,7 +38,7 @@ git_rev="${SHORT_SHA:-$(git rev-parse --short HEAD)}"
 git_tag="${TAG_NAME:-$(git describe --tags --dirty --always)}"
 echo >&2 "(Stamping with git tag=${git_tag} rev=${git_rev})"
 
-env GO111MODULE=on CGO_ENABLED=0 gox -osarch="${OSARCH:-$supported_platforms}" \
+env CGO_ENABLED=0 gox -osarch="${OSARCH:-$supported_platforms}" \
   -tags netgo \
   -mod readonly \
   -ldflags="-w -X ${version_pkg}.gitCommit=${git_rev} \

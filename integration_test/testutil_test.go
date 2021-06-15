@@ -30,15 +30,18 @@ import (
 
 	"github.com/pkg/errors"
 
+	"sigs.k8s.io/krew/internal/environment"
+	"sigs.k8s.io/krew/internal/installation/receipt"
+	"sigs.k8s.io/krew/internal/testutil"
 	"sigs.k8s.io/krew/pkg/constants"
-	"sigs.k8s.io/krew/pkg/testutil"
+	"sigs.k8s.io/krew/pkg/index"
 )
 
 const (
 	persistentIndexCache = "krew-persistent-index-cache"
 	krewBinaryEnv        = "KREW_BINARY"
-	validPlugin          = "konfig" // a plugin in central index with small size
-	validPlugin2         = "mtail"  // a plugin in central index with small size
+	validPlugin          = "ctx" // a plugin in central index with small size
+	validPlugin2         = "ns"  // a plugin in central index with small size
 )
 
 var (
@@ -58,8 +61,8 @@ type ITest struct {
 }
 
 // NewTest creates a fluent krew ITest.
-func NewTest(t *testing.T) (*ITest, func()) {
-	tempDir, cleanup := testutil.NewTempDir(t)
+func NewTest(t *testing.T) *ITest {
+	tempDir := testutil.NewTempDir(t)
 	binDir := setupKrewBin(t, tempDir)
 
 	return &ITest{
@@ -68,9 +71,12 @@ func NewTest(t *testing.T) (*ITest, func()) {
 		env: []string{
 			fmt.Sprintf("KREW_ROOT=%s", tempDir.Root()),
 			fmt.Sprintf("PATH=%s", augmentPATH(t, binDir)),
+			"KREW_OS=linux",
+			"KREW_ARCH=amd64",
+			"KREW_NO_UPGRADE_CHECK=1",
 		},
 		tempDir: tempDir,
-	}, cleanup
+	}
 }
 
 // setupKrewBin symlinks the $KREW_BINARY to $tempDir/bin and returns the path
@@ -150,6 +156,18 @@ func (it *ITest) AssertExecutableNotInPATH(file string) {
 	}
 }
 
+// AssertPluginFromIndex asserts that a receipt exists for the given plugin and
+// that it is from the specified index.
+func (it *ITest) AssertPluginFromIndex(plugin, indexName string) {
+	it.t.Helper()
+
+	receiptPath := environment.NewPaths(it.Root()).PluginInstallReceiptPath(plugin)
+	r := it.loadReceipt(receiptPath)
+	if r.Status.Source.Name != indexName {
+		it.t.Errorf("wanted index '%s', got: '%s'", indexName, r.Status.Source.Name)
+	}
+}
+
 // Krew configures the runner to call krew with arguments args.
 func (it *ITest) Krew(args ...string) *ITest {
 	it.plugin = "krew"
@@ -162,9 +180,18 @@ func (it *ITest) Root() string {
 	return it.tempDir.Root()
 }
 
-// WithIndex initializes the index with the actual krew-index from github/kubernetes-sigs/krew-index.
-func (it *ITest) WithIndex() *ITest {
+// WithDefaultIndex initializes the index with the actual krew-index from github/kubernetes-sigs/krew-index.
+func (it *ITest) WithDefaultIndex() *ITest {
 	it.initializeIndex()
+	return it
+}
+
+// WithCustomIndexFromDefault initializes a new index by cloning the default index. WithDefaultIndex needs
+// to be called before this function. This is a helper function for working with custom indexes in the
+// integration tests so that developers don't need to alias the cloned default index each time.
+func (it *ITest) WithCustomIndexFromDefault(name string) *ITest {
+	indexPath := environment.NewPaths(it.Root()).IndexPath(constants.DefaultIndexName)
+	it.Krew("index", "add", name, indexPath).RunOrFail()
 	return it
 }
 
@@ -184,33 +211,9 @@ func (it *ITest) WithStdin(r io.Reader) *ITest {
 	return it
 }
 
-// RunOrFail runs the krew command and fails the test if the command returns an error.
-func (it *ITest) RunOrFail() {
-	it.t.Helper()
-	if err := it.Run(); err != nil {
-		it.t.Fatal(err)
-	}
-}
-
-// Run runs the krew command.
-func (it *ITest) Run() error {
-	it.t.Helper()
-
-	cmd := it.cmd(context.Background())
-	it.t.Log(cmd.Args)
-
-	start := time.Now()
-	if err := cmd.Run(); err != nil {
-		return errors.Wrapf(err, "krew %v", it.args)
-	}
-
-	it.t.Log("Ran in", time.Since(start))
-	return nil
-}
-
-// RunOrFailOutput runs the krew command and fails the test if the command
-// returns an error. It only returns the standard output.
-func (it *ITest) RunOrFailOutput() []byte {
+// Run runs the krew command, and returns its combined output even when
+// it fails.
+func (it *ITest) Run() ([]byte, error) {
 	it.t.Helper()
 
 	cmd := it.cmd(context.Background())
@@ -219,13 +222,33 @@ func (it *ITest) RunOrFailOutput() []byte {
 	}
 	it.t.Log(cmd.Args)
 
-	start := time.Now()
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		it.t.Fatalf("krew %v: %v, %s", it.args, err, out)
-	}
+	var b bytes.Buffer
+	cmd.Stdout = &b
+	cmd.Stderr = &b
 
+	start := time.Now()
+	err := cmd.Run()
+	out := b.Bytes()
 	it.t.Log("Ran in", time.Since(start))
+	return out, errors.Wrapf(err, "krew %v: %v, %s", it.args, err, string(out))
+}
+
+// RunOrFail runs the krew command and fails the test if the command returns an error.
+func (it *ITest) RunOrFail() {
+	it.t.Helper()
+	if _, err := it.Run(); err != nil {
+		it.t.Fatal(err)
+	}
+}
+
+// RunOrFailOutput runs the krew command and fails the test if the command
+// returns an error. It only returns the standard output.
+func (it *ITest) RunOrFailOutput() []byte {
+	it.t.Helper()
+	out, err := it.Run()
+	if err != nil {
+		it.t.Fatal(err)
+	}
 	return out
 }
 
@@ -241,6 +264,14 @@ func (it *ITest) cmd(ctx context.Context) *exec.Cmd {
 
 func (it *ITest) TempDir() *testutil.TempDir {
 	return it.tempDir
+}
+
+func (it *ITest) loadReceipt(path string) index.Receipt {
+	pluginReceipt, err := receipt.Load(path)
+	if err != nil {
+		it.t.Fatalf("error loading receipt: %v", err)
+	}
+	return pluginReceipt
 }
 
 // InitializeIndex initializes the krew index in `$root/index` with the actual krew-index.
@@ -266,8 +297,8 @@ func (it *ITest) initializeIndex() {
 		}
 	})
 
-	indexDir := filepath.Join(it.Root(), "index")
-	if err := os.Mkdir(indexDir, 0777); err != nil {
+	indexDir := filepath.Join(it.Root(), "index", "default")
+	if err := os.MkdirAll(indexDir, 0777); err != nil {
 		if os.IsExist(err) {
 			it.t.Log("initializeIndex should only be called once")
 			return
@@ -284,11 +315,10 @@ func (it *ITest) initializeIndex() {
 
 func initFromGitClone(t *testing.T) ([]byte, error) {
 	const tarName = "index.tar"
-	indexDir, cleanup := testutil.NewTempDir(t)
-	defer cleanup()
+	indexDir := testutil.NewTempDir(t)
 	indexRoot := indexDir.Root()
 
-	cmd := exec.Command("git", "clone", "--depth=1", "--single-branch", "--no-tags", constants.IndexURI)
+	cmd := exec.Command("git", "clone", "--depth=1", "--single-branch", "--no-tags", constants.DefaultIndexURI)
 	cmd.Dir = indexRoot
 	if err := cmd.Run(); err != nil {
 		return nil, err

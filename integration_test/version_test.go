@@ -15,33 +15,72 @@
 package integrationtest
 
 import (
-	"fmt"
+	"path"
 	"regexp"
+	"strings"
 	"testing"
+
+	"github.com/pkg/errors"
 )
 
 func TestKrewVersion(t *testing.T) {
 	skipShort(t)
 
-	test, cleanup := NewTest(t)
-	defer cleanup()
+	test := NewTest(t)
 
-	output := test.Krew("version").RunOrFailOutput()
+	stdOut := string(test.Krew("version").RunOrFailOutput())
+	err := checkRequiredSubstrings(test, "https://github.com/kubernetes-sigs/krew-index.git", stdOut)
+	if err != nil {
+		t.Error(err)
+	}
+}
 
-	requiredSubstrings := []string{
-		fmt.Sprintf(`BasePath\s+%s`, test.Root()),
-		"GitTag",
-		"GitCommit",
-		`IndexURI\s+https://github.com/kubernetes-sigs/krew-index.git`,
-		"IndexPath",
-		"InstallPath",
-		"DownloadPath",
-		"BinPath",
+func TestKrewVersion_CustomDefaultIndexURI(t *testing.T) {
+	skipShort(t)
+
+	test := NewTest(t)
+
+	stdOut := string(test.WithEnv("KREW_DEFAULT_INDEX_URI", "foo").Krew("version").RunOrFailOutput())
+	err := checkRequiredSubstrings(test, "foo", stdOut)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func checkRequiredSubstrings(test *ITest, index, stdOut string) error {
+	lineSplit := regexp.MustCompile(`\s+`)
+	actual := make(map[string]string)
+	for _, line := range strings.Split(stdOut, "\n") {
+		if line == "" {
+			continue
+		}
+		optionValue := lineSplit.Split(line, 2)
+		if len(optionValue) < 2 {
+			return errors.Errorf("`%v` is not an `OPTION VALUE` pair separated by spaces", optionValue)
+		}
+		actual[optionValue[0]] = optionValue[1]
 	}
 
-	for _, p := range requiredSubstrings {
-		if regexp.MustCompile(p).FindSubmatchIndex(output) == nil {
-			t.Errorf("Expected to find %q in output of `krew version`", p)
+	requiredSubstrings := map[string]string{
+		"OPTION":           "VALUE",
+		"BasePath":         test.Root(),
+		"GitTag":           "",
+		"GitCommit":        "",
+		"IndexURI":         index,
+		"IndexPath":        path.Join(test.Root(), "index"),
+		"InstallPath":      path.Join(test.Root(), "store"),
+		"BinPath":          path.Join(test.Root(), "bin"),
+		"DetectedPlatform": "/",
+	}
+
+	for k, v := range requiredSubstrings {
+		got, ok := actual[k]
+		if !ok {
+			return errors.Errorf("`krew version` output doesn't contain field %q", k)
+		} else if !strings.Contains(got, v) {
+			return errors.Errorf("`krew version` %q field doesn't contain string %q (got: %q)", k, v, got)
 		}
 	}
+
+	return nil
 }
